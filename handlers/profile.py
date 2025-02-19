@@ -4,7 +4,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from database.database import get_printer_info, update_printer_info, update_printer_description, update_printer_type
+from database.database import get_printer_info, update_printer_info, update_printer_description, update_printer_type, get_average_rating
 from keyboards.inline import change_printer_info, printer_type
 
 # Настройка логирования
@@ -32,12 +32,14 @@ async def take_profile(message: Message):
             await message.answer("❌ Вы не зарегистрированы как исполнитель!")
             return
 
+        avg_rating = await get_average_rating(printer_id)
+
         await message.answer(
             f"👤 {info['full_name']}\n"
             f"🏠 Комната: {info['room_number']}\n"
             f"💰 Цена за лист: {info['price_per_page']} руб.\n"
             f"📌 Описание: {info['description'] or 'Не указано'}\n"
-            f"🖨 Тип принтера: {info['printer_type'] or 'Не указан'}",
+            f"🖨 Тип принтера: {info['printer_type'] or 'Не указан'}\n"
             f"⭐ Средний рейтинг: {avg_rating}",
             reply_markup=change_printer_info
         )

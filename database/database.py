@@ -238,7 +238,6 @@ async def add_review(printer_id: int, user_id: int, rating: int, comment: str):
         await conn.close()
 
 async def get_average_rating(printer_id: int):
-    """Получение среднего рейтинга принтера"""
     conn = await connect_db()
     try:
         result = await conn.fetchval("""

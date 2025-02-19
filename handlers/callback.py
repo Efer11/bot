@@ -179,7 +179,6 @@ async def view_profile(call: CallbackQuery):
 async def cancel(call: CallbackQuery):
     await call.message.delete()
 
-
 # 🔹 Регистрация исполнителя
 @router.callback_query(F.data == "printer")
 async def printer_callback(call: CallbackQuery, state: FSMContext):
@@ -213,7 +212,32 @@ async def price_per_page_handler(message: Message, state: FSMContext):
         await message.answer("Ошибка! Введите число, например: 0.25")
 
 
+@router.message(RegisterPrinter.description)
+async def description_handler(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await message.answer("Введите номер карты для оплаты (например, 1234 5678 9012 3456):")
+    await state.set_state(RegisterPrinter.card_number)
+
+
 @router.message(RegisterPrinter.card_number)
-async def card_number_handler(message: Message, state: FSMContext):
+async def card_number_handler(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    chat = await bot.get_chat(user_id)
+
+    # Получаем данные, введённые ранее
+    data = await state.get_data()
+
+    await register_printer(
+        telegram_id=user_id,  # Исправлено: передаём telegram_id
+        chat_id=message.chat.id,
+        full_name=chat.full_name,
+        username=chat.username or "",  # Если username отсутствует, передаём пустую строку
+        room_number=data["room_number"],
+        price_per_page=data["price_per_page"],
+        description=data.get("description", ""),  # Описание может отсутствовать
+        card_number=message.text
+    )
+
     await message.answer("✅ Регистрация завершена!")
     await state.clear()
+
