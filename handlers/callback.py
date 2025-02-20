@@ -108,7 +108,7 @@ async def show_all_printers(call: CallbackQuery):
         return
 
     printer_list_text = "\n\n".join([
-        f"👤 {p['full_name']} | 🏠 {p['room_number']} | 💰 {p['price_per_page']} руб.\n🖨 {p['printer_type']}"
+        f"👤 {p['full_name']} | 🏠 {p['room_number']} | 💰 {p['price_per_page']} руб.(ч/б) | 💰 {p['price_per_page_color']} руб.(цвет)\n🖨 {p['printer_type']}"
         for p in printers
     ])
 
@@ -165,7 +165,6 @@ async def view_profile(call: CallbackQuery):
         ]
     )
 
-    # Отправляем информацию о профиле
     await call.message.answer(
         f"👤 {info['full_name']}\n"
         f"🏠 Комната: {info['room_number']}\n"

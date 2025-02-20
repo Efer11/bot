@@ -73,8 +73,6 @@ async def register_printer(
     telegram_id: int, chat_id: int, full_name: str, username: str,
     room_number: str, price_per_page: float, price_per_page_color: float, description: str = "", card_number: str = ""
 ):
-    price_per_page = round(price_per_page, 2)
-    price_per_page_color = round(price_per_page_color, 2)
     if price_per_page < 0:
         raise ValueError("Цена за страницу не может быть отрицательной")
 
