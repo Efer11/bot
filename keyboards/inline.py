@@ -15,16 +15,6 @@ change_button = InlineKeyboardMarkup(
     ]
 )
 
-change_printer_info = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Изменить комнату", callback_data="change_room")],
-        [InlineKeyboardButton(text="💰 Изменить цену", callback_data="change_price")],
-        [InlineKeyboardButton(text="📌 Изменить описание", callback_data="change_description")],
-        [InlineKeyboardButton(text="🖨 Добавить описание принтера", callback_data="add_printer_type")],
-        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close")]
-    ]
-)
-
 printer_type = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Лазерный ч/б", callback_data="printer_type_laser_bw")],
