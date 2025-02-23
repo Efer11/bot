@@ -83,6 +83,14 @@ async def handle_document(message: Message, state: FSMContext):
             reply_markup=keyboard
         )
         return
+    else:
+        # Если меньше 3 файлов, сразу спрашиваем формат для каждого
+        for doc in documents:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{doc['file_id']}")],
+                [InlineKeyboardButton(text="Цвет", callback_data=f"color_{doc['file_id']}")]
+            ])
+            await message.answer(f"Выберите формат печати для файла: {doc['file_name']}", reply_markup=keyboard)
 
 async def ask_print_type_for_file(message: Message, index: int):
     data = await state.get_data()
