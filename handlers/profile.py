@@ -4,7 +4,8 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from database.database import get_printer_info, update_printer_info, update_printer_description, update_printer_type, get_average_rating, update_printer_price_per_page_color, get_reviews
+from database.database import (get_printer_info, update_printer_info, update_printer_description, update_printer_type, get_average_rating,
+                               update_printer_price_per_page_color, get_reviews, get_printer_stats)
 from keyboards.inline import printer_type
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -30,9 +31,18 @@ async def take_profile(message: Message):
 
     try:
         info = await get_printer_info(printer_id)
+        printer_stats = await get_printer_stats(printer_id)
         if not info:
             await message.answer("❌ Вы не зарегистрированы как исполнитель!")
             return
+
+        if not printer_stats:
+            printer_stats = {
+                "total_pages_printed": 0,
+                "total_earnings": 0,
+                "total_orders_completed": 0,
+                "avg_rating": "Нет данных"
+            }
 
         avg_rating = await get_average_rating(printer_id)
 
@@ -55,8 +65,13 @@ async def take_profile(message: Message):
             f"💰 Цена за лист ч/б: {info['price_per_page']} руб.\n"
             f"💰 Цена за лист цвет: {info['price_per_page_color']} руб.\n"
             f"📌 Описание: {info['description'] or 'Не указано'}\n"
+            f"💳 Карта: {info['card_number'] or 'Не указана'}\n"
             f"🖨 Тип принтера: {info['printer_type'] or 'Не указан'}\n"
-            f"⭐ Средний рейтинг: {avg_rating}",
+            f"⭐ Средний рейтинг: {avg_rating}\n"
+            f"📊 *Статистика*\n"
+            f"📑 Всего страниц напечатано: {printer_stats['total_pages_printed'] or '0'}\n"
+            f"💰 Заработано: {printer_stats['total_earnings'] or '0'}\n"
+            f"📦 Всего заказов выполнено: {printer_stats['total_orders_completed'] or '0'}\n",
             reply_markup=change_printer_info
         )
     except Exception as e:
@@ -239,7 +254,6 @@ async def update_description(message: Message, state: FSMContext):
         logger.exception(f"Ошибка при обновлении описания: {e}")
         await message.answer("❌ Произошла ошибка при обновлении описания.")
     await state.clear()
-
 
 @profile_router.callback_query(F.data == "close")
 async def close(callback: CallbackQuery, state: FSMContext):

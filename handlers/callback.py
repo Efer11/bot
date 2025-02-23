@@ -157,7 +157,6 @@ async def view_profile(call: CallbackQuery):
 
     avg_rating = await get_average_rating(printer_id)
 
-    # Кнопки профиля исполнителя
     profile_buttons = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📢 Посмотреть отзывы", callback_data=f"view_reviews_{printer_id}_0")],
@@ -181,27 +180,25 @@ async def view_profile(call: CallbackQuery):
 async def view_reviews(call: CallbackQuery):
     parts = call.data.split("_")
 
-    if len(parts) < 3:  # Проверяем, достаточно ли частей в callback-данных
+    if len(parts) < 3:
         await call.answer("❌ Ошибка: Некорректные данные.", show_alert=True)
         return
 
-    printer_id = int(parts[2])  # Берем printer_id
-    page = int(parts[3]) if len(parts) > 3 else 0  # Берем page, если есть
+    printer_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else 0
 
-    reviews = await get_reviews(printer_id)
+    reviews = await get_reviews(printer_id, limit = 15)
     total_reviews = len(reviews)
 
     if total_reviews == 0:
         await call.answer("❌ Отзывов пока нет.", show_alert=True)
         return
 
-    # Разбиваем отзывы на страницы (по 3 отзыва на страницу)
     reviews_per_page = 3
     start_index = page * reviews_per_page
     end_index = start_index + reviews_per_page
     reviews_on_page = reviews[start_index:end_index]
 
-    # Формируем текст отзывов
     review_texts = []
     for review in reviews_on_page:
         stars = "⭐" * review["rating"] + "☆" * (5 - review["rating"])
@@ -210,19 +207,16 @@ async def view_reviews(call: CallbackQuery):
 
     reviews_text = "\n\n".join(review_texts)
 
-    # Кнопки управления страницами
     buttons = []
     if start_index > 0:
         buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"view_reviews_{printer_id}_{page - 1}"))
     if end_index < total_reviews:
         buttons.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"view_reviews_{printer_id}_{page + 1}"))
 
-    # Добавляем кнопку закрытия
     buttons.append(InlineKeyboardButton(text="❌ Закрыть", callback_data="close_reviews"))
 
     review_buttons = InlineKeyboardMarkup(inline_keyboard=[buttons])
 
-    # Отправляем сообщение с отзывами
     if call.message.text:
         await call.message.edit_text(f"📢 Отзывы об исполнителе:\n\n{reviews_text}", reply_markup=review_buttons)
     else:
@@ -256,7 +250,7 @@ async def printer_callback(call: CallbackQuery, state: FSMContext):
 @router.message(RegisterPrinter.room_number)
 async def room_number_handler(message: Message, state: FSMContext):
     await state.update_data(room_number=message.text)
-    await message.answer("Введите стоимость за один лист (например 0.25):")
+    await message.answer("Введите стоимость за один лист ч/б (например 0.25):")
     await state.set_state(RegisterPrinter.price_per_page)
 
 
@@ -265,16 +259,16 @@ async def price_per_page_handler(message: Message, state: FSMContext):
     try:
         price = float(message.text)
         await state.update_data(price_per_page=price)
-        await message.answer("Добавьте описание ваших услуг:")
+        await message.answer("Введите стоимость за один лист цвет (например 0.5):")
         await state.set_state(RegisterPrinter.price_per_page_color)
     except ValueError:
         await message.answer("Ошибка! Введите число, например: 0.25")
 
 @router.message(RegisterPrinter.price_per_page_color)
-async def price_per_page_handler(message: Message, state: FSMContext):
+async def price_per_page_color_handler(message: Message, state: FSMContext):
     try:
-        price = float(message.text)
-        await state.update_data(price_per_page_color=price)
+        price_color = float(message.text)
+        await state.update_data(price_per_page_color=price_color)
         await message.answer("Добавьте описание ваших услуг:")
         await state.set_state(RegisterPrinter.description)
     except ValueError:
@@ -292,18 +286,17 @@ async def card_number_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     chat = await bot.get_chat(user_id)
 
-    # Получаем данные, введённые ранее
     data = await state.get_data()
 
     await register_printer(
-        telegram_id=user_id,  # Исправлено: передаём telegram_id
+        telegram_id=user_id,
         chat_id=message.chat.id,
         full_name=chat.full_name,
-        username=chat.username or "",  # Если username отсутствует, передаём пустую строку
+        username=chat.username or "",
         room_number=data["room_number"],
         price_per_page=data["price_per_page"],
         price_per_page_color=data["price_per_page_color"],
-        description=data.get("description", ""),  # Описание может отсутствовать
+        description=data.get("description", ""),
         card_number=message.text
     )
 

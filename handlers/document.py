@@ -1,23 +1,21 @@
 import logging
 import fitz
-from decimal import Decimal
-from aiogram import Router, F
+import time
+from aiogram import Router, F, Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.filters import StateFilter
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from handlers.callback import user_printer_selection
-from database.database import get_printer_room, get_printer_info, add_review, get_average_rating
+from database.database import get_printer_room, get_printer_info, add_review, get_average_rating, update_printer_stats
 
 router = Router()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 class PrintRequest(StatesGroup):
-    choosing_print_type = State()
+    waiting_print_type = State()
     waiting_for_requirements = State()
 
 class PaymentState(StatesGroup):
@@ -64,126 +62,160 @@ async def handle_document(message: Message, state: FSMContext):
         await message.answer("⚠ Ошибка при обработке файла. Попробуйте другой файл.")
         return
 
-    await state.update_data(
-        file_id=message.document.file_id,
-        file_name=message.document.file_name,
-        page_count=page_count,
-        printer_id=printer_id,
-        price_bw=printer_info.get("price_per_page"),
-        price_color=printer_info.get("price_per_page_color")
-    )
-
-    # Добавляем кнопку "✏ Заменить файл"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖤 Чёрно-белая", callback_data="print_bw")],
-        [InlineKeyboardButton(text="🌈 Цветная", callback_data="print_color")],
-        [InlineKeyboardButton(text="✏ Заменить файл", callback_data="replace_file")]
-    ])
-
-    await message.answer(f"📂 Загружен файл: {message.document.file_name}\nВыберите формат печати или замените файл:", reply_markup=keyboard)
-    await state.set_state(PrintRequest.choosing_print_type)
-
-
-@router.callback_query(F.data == "replace_file")
-async def replace_file_request(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("📂 Отправьте новый PDF-файл для замены текущего.")
-    await state.set_state(PrintRequest.choosing_print_type)
-
-
-@router.message(StateFilter(PrintRequest.choosing_print_type), F.document)
-async def handle_new_document(message: Message, state: FSMContext):
-    user_data = await state.get_data()
-
-    if not message.document.file_name.lower().endswith(".pdf"):
-        await message.answer("⚠ Поддерживаются только PDF-файлы для точного подсчета стоимости.")
-        return
-
-    page_count = await get_pdf_page_count(message.document.file_id, message.bot)
-    if page_count == 0:
-        await message.answer("⚠ Ошибка при обработке файла. Попробуйте другой файл.")
-        return
-
-    await state.update_data(
-        file_id=message.document.file_id,
-        file_name=message.document.file_name,
-        page_count=page_count
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖤 Чёрно-белая", callback_data="print_bw")],
-        [InlineKeyboardButton(text="🌈 Цветная", callback_data="print_color")],
-        [InlineKeyboardButton(text="✏ Заменить файл", callback_data="replace_file")]
-    ])
-
-    await message.answer("✅ Новый файл загружен! Выберите формат печати:", reply_markup=keyboard)
-
-
-@router.callback_query(F.data.in_(["print_bw", "print_color"]))
-async def choose_print_mode(call: CallbackQuery, state: FSMContext):
-    await call.message.delete()
     data = await state.get_data()
+    documents = data.get("documents", [])
 
-    color_mode = "ЧБ" if call.data == "print_bw" else "Цвет"
+    # Сохраняем printer_id
+    await state.update_data(printer_id=printer_id)
 
-    # Используем .get() с значением по умолчанию
-    price_per_page_bw = Decimal(data.get("price_bw", 0.25))  # ЧБ
-    price_per_page_color = Decimal(data.get("price_color", 0.5))  # Цвет
+    documents.append(
+        {"file_id": message.document.file_id, "file_name": message.document.file_name, "pages": page_count, "print_type": None}
+    )
+    await state.update_data(documents=documents)
 
-    # Определяем цену за страницу в зависимости от формата
-    price_per_page = price_per_page_bw if call.data == "print_bw" else price_per_page_color
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{len(documents) - 1}")],
+        [InlineKeyboardButton(text="Цвет", callback_data=f"color_{len(documents) - 1}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_upload")]
+    ])
 
-    # Проверяем наличие ключей в `data`
-    if "page_count" not in data or "file_id" not in data or "file_name" not in data:
-        await call.message.answer("❌ Ошибка: отсутствуют данные о файле. Попробуйте загрузить файл заново.")
+    await message.answer(
+        f"📄 Файл {message.document.file_name} принят.\n"
+        f"📑 Страниц в файле: {page_count}\n"
+        "Выберите тип печати:",
+        reply_markup=keyboard
+    )
+
+@router.callback_query(F.data == "back_to_upload")
+async def back_to_upload(call: CallbackQuery, state: FSMContext):
+    await state.update_data(documents=[])  # Очищаем загруженные файлы
+    await call.message.answer("📤 Загрузите новый файл для печати.")
+    await call.message.delete()  # Удаляем старое сообщение
+    await call.answer()
+
+
+async def update_total_price(state: FSMContext):
+    data = await state.get_data()
+    documents = data.get("documents", [])
+
+    total_price = sum(float(doc.get("cost", 0)) for doc in documents)
+    total_pages = sum(doc.get("pages", 0) for doc in documents)  # Аналогично для страниц
+
+    await state.update_data(total_pages=total_pages, total_price=total_price)
+
+@router.callback_query(F.data.startswith("bw_"))
+async def choose_bw(call: CallbackQuery, state: FSMContext):
+    index = int(call.data.split("_")[1])
+    data = await state.get_data()
+    documents = data.get("documents", [])
+
+    if index >= len(documents):
+        await call.message.answer("❌ Ошибка: Файл не найден.")
         return
 
-    file_cost = Decimal(data["page_count"]) * price_per_page  # Расчет стоимости
+    printer_id = data.get("printer_id")
+    printer_info = await get_printer_info(printer_id)
 
-    documents = data.get("documents", [])
-    total_pages = Decimal(data.get("total_pages", 0))
-    total_price = Decimal(data.get("total_price", 0))
+    if not printer_info:
+        await call.message.answer("❌ Ошибка: Не удалось получить информацию о принтере.")
+        return
 
-    # Добавляем информацию о файле, включая формат печати
-    documents.append({
-        "file_id": data["file_id"],
-        "file_name": data["file_name"],
-        "pages": data["page_count"],
-        "color_mode": color_mode,  # 🔥 Передаем формат печати
-        "price_per_page": price_per_page,
-        "file_cost": file_cost  # Добавляем стоимость файла
-    })
-    total_pages += Decimal(data["page_count"])
-    total_price += file_cost
+    price_per_page = printer_info.get("price_per_page", 0.25)
 
-    await state.update_data(
-        documents=documents,
-        total_pages=total_pages,
-        total_price=total_price
-    )
+    documents[index]["print_type"] = "bw"
+    documents[index]["cost"] = documents[index]["pages"] * price_per_page
+
+    await state.update_data(documents=documents)
+    await update_total_price(state)
+
+    # ✅ Удаляем сообщение с кнопками
+    await call.message.delete()
+
+    # ✅ Получаем обновленные данные
+    updated_data = await state.get_data()
+    total_pages = updated_data.get("total_pages", 0)
+    total_price = updated_data.get("total_price", 0)
 
     await call.message.answer(
-        f"📄 Файл `{data['file_name']}` принят.\n"
-        f"📑 Страниц в файле: {data['page_count']}\n"
-        f"🎨 Формат печати: {color_mode}\n"
-        f"💰 Стоимость файла: {file_cost} руб.\n\n"
+        f"📄 Файл {documents[index]['file_name']} принят.\n"
+        f"📑 Страниц в файле: {documents[index]['pages']}\n"
+        f"🎨 Формат печати: Ч/Б\n"
+        f"💰 Стоимость файла: {documents[index]['cost']} руб.\n\n"
         f"📊 Общий подсчет:\n"
         f"📑 Всего страниц: {total_pages}\n"
         f"💵 Итоговая стоимость: {total_price} руб.\n\n"
-        "Если хотите отправить ещё файлы, просто загрузите их.\n"
-        "Когда загрузите все файлы, отправьте сообщение с дополнительными требованиями или 'нет', если требований нет."
+        "Загрузите следующий файл или напишите дополнительные требования к распечатке, напишите 'нет', если у Вас нет дополнительных требований."
+        "Если Вы отправили не тот файл, напишите /start и начните отправку снова."
     )
-
+    await call.answer()
     await state.set_state(PrintRequest.waiting_for_requirements)
+
+
+@router.callback_query(F.data.startswith("color_"))
+async def choose_color(call: CallbackQuery, state: FSMContext):
+    index = int(call.data.split("_")[1])
+    data = await state.get_data()
+    documents = data.get("documents", [])
+
+    if index >= len(documents):
+        await call.message.answer("❌ Ошибка: Файл не найден.")
+        return
+
+    printer_id = data.get("printer_id")
+    printer_info = await get_printer_info(printer_id)
+
+    if not printer_info:
+        await call.message.answer("❌ Ошибка: Не удалось получить информацию о принтере.")
+        return
+
+    price_per_page_color = printer_info.get("price_per_page_color", 0.6)
+
+    documents[index]["print_type"] = "color"
+    documents[index]["cost"] = documents[index]["pages"] * price_per_page_color
+
+    await state.update_data(documents=documents)
+    await update_total_price(state)
+
+    # ✅ Удаляем сообщение с кнопками
+    await call.message.delete()
+
+    # ✅ Получаем обновленные данные
+    updated_data = await state.get_data()
+    total_pages = updated_data.get("total_pages", 0)
+    total_price = updated_data.get("total_price", 0)
+
+    await call.message.answer(
+        f"📄 Файл {documents[index]['file_name']} принят.\n"
+        f"📑 Страниц в файле: {documents[index]['pages']}\n"
+        f"🎨 Формат печати: Цвет\n"
+        f"💰 Стоимость файла: {documents[index]['cost']} руб.\n\n"
+        f"📊 Общий подсчет:\n"
+        f"📑 Всего страниц: {total_pages}\n"
+        f"💵 Итоговая стоимость: {total_price} руб.\n\n"
+        "Загрузите следующий файл или напишите дополнительные требования к распечатке, напишите 'нет', если у Вас нет дополнительных требований."
+        "Если Вы отправили не тот файл, напишите /start и начните отправку снова."
+    )
+    await call.answer()
+    await state.set_state(PrintRequest.waiting_for_requirements)
+
 
 @router.message(PrintRequest.waiting_for_requirements)
 async def ask_payment_method(message: Message, state: FSMContext):
     await state.update_data(requirements=message.text.strip())
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Картой", callback_data="pay_card")],
-        [InlineKeyboardButton(text="💵 Наличными", callback_data="pay_cash")]
+        [InlineKeyboardButton(text="💵 Наличными", callback_data="pay_cash")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_requirements")]
     ])
     await message.answer("Выберите способ оплаты:", reply_markup=keyboard)
     await state.set_state(PaymentState.choosing_payment_method)
+
+@router.callback_query(F.data == "back_to_requirements")
+async def back_to_requirements(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("✍ Введите дополнительные требования к печати или напишите 'нет', если их нет.")
+    await call.message.delete()
+    await call.answer()
+    await state.set_state(PrintRequest.waiting_for_requirements)
 
 
 @router.callback_query(F.data == "pay_card")
@@ -191,19 +223,23 @@ async def handle_card_payment(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     total_price = data.get("total_price", 0)
     printer_id = data.get("printer_id")
+
     if not printer_id:
         await call.message.answer("Не выбран исполнитель.")
         return
+
     printer_info = await get_printer_info(printer_id)
+
     if printer_info and printer_info.get("card_number"):
         card_number = printer_info["card_number"]
         await call.message.answer(f"💳 Оплата картой: {total_price} руб. Оплатите заказ по реквизитам исполнителя: {card_number}")
     else:
         await call.message.answer("Нет номера карточки у исполнителя")
 
-    await send_order_to_printer(call, state, "💳 Оплата картой")
-    await state.clear()
+    # ✅ Обновляем состояние перед отправкой заказа
+    await state.update_data(payment_method="💳 Оплата картой")
 
+    await send_order_to_printer(call, state, "💳 Оплата картой")
 
 @router.callback_query(F.data == "pay_cash")
 async def ask_cash_amount(call: CallbackQuery, state: FSMContext):
@@ -226,7 +262,6 @@ async def handle_cash_payment(message: Message, state: FSMContext):
         payment_info = f"💵 Оплата наличными: {amount_given} руб.\n💰 Сдача: {change} руб."
 
         await send_order_to_printer(message, state, payment_info)
-        await state.clear()
 
     except ValueError:
         await message.answer("❌ Пожалуйста, введите корректную сумму (числом).")
@@ -240,72 +275,99 @@ async def send_order_to_printer(message: Message, state: FSMContext, payment_inf
     total_price = data.get("total_price", 0)
     requirements = data.get("requirements", "Без дополнительных требований.")
 
-    # Достаем пользователя из message
     user = message.from_user
+    order_id = f"{user.id}_{int(time.time())}"
 
-    # Формируем список файлов с указанием типа печати
+    # 📌 Формируем описание заказа
     file_descriptions = "\n".join([
-        f"📄 `{doc['file_name']}` - {doc['pages']} стр. ({doc['color_mode']})"
+        f"📄 {doc['file_name']} - {doc['pages']} стр. ({'Ч/Б' if doc['print_type'] == 'bw' else 'Цвет'})"
         for doc in document_list
     ])
 
     caption = (
-        f"📄 Новый заказ от @{user.username or user.full_name}\n"
-        f"📂 Файлы:\n{file_descriptions}\n"
-        f"📑 Всего страниц: {total_pages}\n"
-        f"💰 Итоговая стоимость: {total_price} руб.\n"
-        f"📌 Требования: {requirements}\n"
+        f"📄 *Новый заказ от @{user.username or user.full_name}*\n"
+        f"📂 *Файлы:* \n{file_descriptions}\n"
+        f"📑 *Всего страниц:* {total_pages}\n"
+        f"💰 *Итоговая стоимость:* {total_price} руб.\n"
+        f"📌 *Требования:* {requirements}\n"
         f"{payment_info}"
     )
 
     complete_button = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"complete_{user.id}")],
-            [InlineKeyboardButton(text="❌ Отказаться", callback_data=f"reject_{user.id}")]
+            [InlineKeyboardButton(text="❌ Отказаться от выполнения", callback_data=f"reject_order_{order_id}")]
         ]
     )
 
     try:
-        if len(document_list) > 1:
-            media_group = [{"type": "document", "media": doc["file_id"]} for doc in document_list]
+        # ✅ Отправляем сообщение-заголовок с описанием заказа
+        await message.bot.send_message(chat_id=printer_id, text=caption, parse_mode="Markdown", reply_markup=complete_button)
+
+        # ✅ Разбиваем файлы на группы по 10
+        batch_size = 10
+        for i in range(0, len(document_list), batch_size):
+            batch = document_list[i:i + batch_size]
+
+            media_group = [
+                {
+                    "type": "document",
+                    "media": doc["file_id"],
+                    "caption": f"{doc['file_name']} ({'Ч/Б' if doc['print_type'] == 'bw' else 'Цвет'})"
+                }
+                for doc in batch
+            ]
+
             await message.bot.send_media_group(chat_id=printer_id, media=media_group)
-            await message.bot.send_message(chat_id=printer_id, text=caption, reply_markup=complete_button)
-        else:
-            await message.bot.send_document(
-                chat_id=printer_id,
-                document=document_list[0]["file_id"],
-                caption=caption,
-                reply_markup=complete_button
-            )
 
-        await message.answer(f"✅ Заказ отправлен исполнителю!\n💰 Итоговая стоимость: {total_price} руб.")
+        # ✅ Подтверждение пользователю
+        await message.answer(f"✅ *Ваш заказ отправлен исполнителю!*\n💰 *Итоговая стоимость:* {total_price} руб.", parse_mode="Markdown")
+
     except TelegramBadRequest as e:
-        logger.error(f"Ошибка при отправке файла: {e}")
-        await message.answer("❌ Ошибка при отправке файлов. Возможно, исполнитель недоступен.")
+        logger.error(f"Ошибка при отправке файлов: {e}")
+        await message.answer("❌ Ошибка при отправке файлов исполнителю.")
 
+@router.callback_query(F.data.startswith("reject_order_"))
+async def reject_order(call: CallbackQuery, state:FSMContext, bot: Bot):
+    order_id = call.data.split("_")[2]  # Получаем ID заказа
+    user_id = int(order_id.split("_")[0])  # Получаем ID заказчика
 
-@router.callback_query(F.data.startswith("complete_") | F.data.startswith("reject_"))
-async def handle_order_status(call: CallbackQuery):
-    action, user_id = call.data.split("_")
-    user_id = int(user_id)
-    printer_id = call.message.chat.id
+    try:
+        await state.clear()
+        await bot.send_message(user_id, "❌ Исполнитель отказался от выполнения вашего заказа.")
+        await call.message.edit_text("❌ Вы отказались от выполнения заказа.")
 
-    if action == "complete":
+    except Exception as e:
+        logger.error(f"Ошибка при уведомлении пользователя: {e}")
+
+@router.callback_query(F.data.startswith("complete_"))
+async def complete_task(call: CallbackQuery, state: FSMContext):
+    try:
+        user_id = int(call.data.split("_")[1])
+        printer_id = call.message.chat.id
         room_number = await get_printer_room(printer_id) or "не указана. Обратитесь к исполнителю в ЛС"
+
+        data = await state.get_data()
+        total_pages = data.get("total_pages", 0)
+        total_price = data.get("total_price", 0)
+
+        await update_printer_stats(printer_id, total_pages, total_price)
+        await state.clear()
 
         await call.message.bot.send_message(
             chat_id=user_id,
             text=f"✅ Ваш заказ выполнен! Подойдите к {room_number} для получения распечатки."
         )
 
+        # 🔹 Кнопка для оценки
         rating_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[
-                InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{printer_id}_1"),
-                InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{printer_id}_2"),
-                InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{printer_id}_3"),
-                InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{printer_id}_4"),
-                InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{printer_id}_5")
-            ]]
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ 1", callback_data=f"rate_{printer_id}_1"),
+                 InlineKeyboardButton(text="⭐ 2", callback_data=f"rate_{printer_id}_2"),
+                 InlineKeyboardButton(text="⭐ 3", callback_data=f"rate_{printer_id}_3"),
+                 InlineKeyboardButton(text="⭐ 4", callback_data=f"rate_{printer_id}_4"),
+                 InlineKeyboardButton(text="⭐ 5", callback_data=f"rate_{printer_id}_5")]
+            ]
         )
 
         await call.message.bot.send_message(
@@ -316,27 +378,9 @@ async def handle_order_status(call: CallbackQuery):
 
         await call.message.edit_reply_markup(reply_markup=None)
         await call.answer("✅ Заказ выполнен.")
-
-    elif action == "reject":
-        await call.message.bot.send_message(
-            chat_id=user_id,
-            text="❌ Ваш заказ был отклонен исполнителем. Попробуйте выбрать другого."
-        )
-
-        # Проверяем, есть ли текст в сообщении перед редактированием
-        if call.message.text:
-            await call.message.edit_text("🚫 Заказ отклонен исполнителем.", reply_markup=None)
-        else:
-            await call.message.delete()  # Удаляем, если редактировать нельзя
-
-        await call.answer("❌ Вы отказались от заказа.")
-
-
-    # Проверяем, есть ли текст в сообщении
-    if call.message.text:
-        await call.message.edit_text("🚫 Заказ отклонен исполнителем.", reply_markup=None)
-    else:
-        await call.message.delete()
+    except Exception as e:
+        logger.exception(f"Ошибка при подтверждении: {e}")
+        await call.answer("❌ Ошибка при подтверждении выполнения.")
 
 @router.callback_query(F.data.startswith("rate_"))
 async def rate_printer(call: CallbackQuery, state: FSMContext):
@@ -344,6 +388,7 @@ async def rate_printer(call: CallbackQuery, state: FSMContext):
     printer_id, rating = int(printer_id), int(rating)
 
     await state.update_data(printer_id=printer_id, rating=rating)
+    await call.message.delete()
     await call.message.answer("✍ Напишите короткий отзыв о исполнителе:")
     await state.set_state(RatingState.waiting_for_comment)
 
