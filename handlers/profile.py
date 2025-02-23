@@ -68,7 +68,7 @@ async def take_profile(message: Message):
             f"💳 Карта: {info['card_number'] or 'Не указана'}\n"
             f"🖨 Тип принтера: {info['printer_type'] or 'Не указан'}\n"
             f"⭐ Средний рейтинг: {avg_rating}\n"
-            f"📊 *Статистика*\n"
+            f"📊 Статистика\n"
             f"📑 Всего страниц напечатано: {printer_stats['total_pages_printed'] or '0'}\n"
             f"💰 Заработано: {printer_stats['total_earnings'] or '0'}\n"
             f"📦 Всего заказов выполнено: {printer_stats['total_orders_completed'] or '0'}\n",

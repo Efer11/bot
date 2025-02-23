@@ -65,7 +65,6 @@ async def handle_document(message: Message, state: FSMContext):
     data = await state.get_data()
     documents = data.get("documents", [])
 
-    # Сохраняем printer_id
     await state.update_data(printer_id=printer_id)
 
     documents.append(
@@ -73,24 +72,149 @@ async def handle_document(message: Message, state: FSMContext):
     )
     await state.update_data(documents=documents)
 
+    if len(documents) > 3:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Все файлы Ч/Б", callback_data="all_bw")],
+            [InlineKeyboardButton(text="Все файлы Цвет", callback_data="all_color")],
+            [InlineKeyboardButton(text="Выбрать для каждого", callback_data="choose_each")],
+        ])
+        await message.answer(
+            "Вы загрузили более 3 файлов. Выберите формат печати для всех сразу или для каждого отдельно:",
+            reply_markup=keyboard
+        )
+        return
+
+async def ask_print_type_for_file(message: Message, index: int):
+    data = await state.get_data()
+    documents = data.get("documents", [])
+
+    if index >= len(documents):
+        return
+
+    doc = documents[index]
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{len(documents) - 1}")],
-        [InlineKeyboardButton(text="Цвет", callback_data=f"color_{len(documents) - 1}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_upload")]
+        [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{index}")],
+        [InlineKeyboardButton(text="Цвет", callback_data=f"color_{index}")],
     ])
 
     await message.answer(
-        f"📄 Файл {message.document.file_name} принят.\n"
-        f"📑 Страниц в файле: {page_count}\n"
-        "Выберите тип печати:",
+        f"📄 {doc['file_name']} ({doc['pages']} стр.)\nВыберите формат печати:",
         reply_markup=keyboard
     )
 
+@router.callback_query(F.data == "all_bw")
+async def set_all_bw(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    documents = data.get("documents", [])
+    printer_info = await get_printer_info(data.get("printer_id"))
+
+    if not printer_info:
+        await call.message.answer("❌ Ошибка: Не удалось получить информацию о принтере.")
+        return
+
+    price_per_page = printer_info.get("price_per_page", 0.25)  # Цена за Ч/Б страницу
+    total_pages = 0
+    total_price = 0
+    summary_message = ""
+
+    for doc in documents:
+        doc["print_type"] = "bw"
+        doc["cost"] = round(doc["pages"] * price_per_page, 2)  # Пересчитываем стоимость
+        total_pages += doc["pages"]
+        total_price += doc["cost"]
+
+        summary_message += (
+            f"📄 Файл: {doc['file_name']}\n"
+            f"📑 Страниц в файле: {doc['pages']}\n"
+            f"🎨 Формат печати: Ч/Б\n"
+            f"💰 Стоимость файла: {doc['cost']} руб.\n\n"
+        )
+
+    summary_message += (
+        f"📊 Общий подсчет:\n"
+        f"📑 Всего страниц: {total_pages}\n"
+        f"💵 Итоговая стоимость: {total_price} руб.\n\n"
+        "Загрузите следующий файл или напишите дополнительные требования к распечатке.\n"
+        "Напишите 'нет', если у вас нет дополнительных требований.\n"
+        "Если вы отправили не тот файл, напишите /start и начните отправку снова."
+    )
+
+    await state.update_data(documents=documents, total_pages=total_pages, total_price=total_price)
+    await call.message.answer(summary_message)
+    await call.message.delete()
+    await call.answer()
+    await state.set_state(PrintRequest.waiting_for_requirements)
+
+
+
+@router.callback_query(F.data == "all_color")
+async def set_all_color(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    documents = data.get("documents", [])
+    printer_info = await get_printer_info(data.get("printer_id"))
+
+    if not printer_info:
+        await call.message.answer("❌ Ошибка: Не удалось получить информацию о принтере.")
+        return
+
+    price_per_page_color = printer_info.get("price_per_page_color", 0.6)
+    total_pages = 0
+    total_price = 0
+    summary_message = ""
+
+    for doc in documents:
+        doc["print_type"] = "color"
+        doc["cost"] = round(doc["pages"] * price_per_page_color, 2)
+        total_pages += doc["pages"]
+        total_price += doc["cost"]
+
+        summary_message += (
+            f"📄 Файл: {doc['file_name']}\n"
+            f"📑 Страниц в файле: {doc['pages']}\n"
+            f"🎨 Формат печати: Цвет\n"
+            f"💰 Стоимость файла: {doc['cost']} руб.\n\n"
+        )
+
+    summary_message += (
+        f"📊 Общий подсчет:\n"
+        f"📑 Всего страниц: {total_pages}\n"
+        f"💵 Итоговая стоимость: {total_price} руб.\n\n"
+        "Загрузите следующий файл или напишите дополнительные требования к распечатке.\n"
+        "Напишите 'нет', если у вас нет дополнительных требований.\n"
+        "Если вы отправили не тот файл, напишите /start и начните отправку снова."
+    )
+
+    await state.update_data(documents=documents, total_pages=total_pages, total_price=total_price)
+    await call.message.answer(summary_message)
+    await call.message.delete()
+    await call.answer()
+    await state.set_state(PrintRequest.waiting_for_requirements)
+
+@router.callback_query(F.data == "choose_each")
+async def choose_each_file(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    documents = data.get("documents", [])
+
+    for index, doc in enumerate(documents):
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{index}")],
+            [InlineKeyboardButton(text="Цвет", callback_data=f"color_{index}")],
+        ])
+
+        await call.message.answer(
+            f"📄 {doc['file_name']} ({doc['pages']} стр.)\nВыберите формат печати:",
+            reply_markup=keyboard
+        )
+
+    await call.message.delete()
+    await call.answer()
+
+
 @router.callback_query(F.data == "back_to_upload")
 async def back_to_upload(call: CallbackQuery, state: FSMContext):
-    await state.update_data(documents=[])  # Очищаем загруженные файлы
+    await state.update_data(documents=[])
     await call.message.answer("📤 Загрузите новый файл для печати.")
-    await call.message.delete()  # Удаляем старое сообщение
+    await call.message.delete()
     await call.answer()
 
 
@@ -98,8 +222,8 @@ async def update_total_price(state: FSMContext):
     data = await state.get_data()
     documents = data.get("documents", [])
 
-    total_price = sum(float(doc.get("cost", 0)) for doc in documents)
-    total_pages = sum(doc.get("pages", 0) for doc in documents)  # Аналогично для страниц
+    total_price = round(sum(float(doc.get("cost", 0)) for doc in documents), 2)
+    total_pages = sum(doc.get("pages", 0) for doc in documents)
 
     await state.update_data(total_pages=total_pages, total_price=total_price)
 
@@ -123,7 +247,7 @@ async def choose_bw(call: CallbackQuery, state: FSMContext):
     price_per_page = printer_info.get("price_per_page", 0.25)
 
     documents[index]["print_type"] = "bw"
-    documents[index]["cost"] = documents[index]["pages"] * price_per_page
+    documents[index]["cost"] = round(documents[index]["pages"] * price_per_page, 2)
 
     await state.update_data(documents=documents)
     await update_total_price(state)
@@ -171,7 +295,7 @@ async def choose_color(call: CallbackQuery, state: FSMContext):
     price_per_page_color = printer_info.get("price_per_page_color", 0.6)
 
     documents[index]["print_type"] = "color"
-    documents[index]["cost"] = documents[index]["pages"] * price_per_page_color
+    documents[index]["cost"] = round(documents[index]["pages"] * price_per_page_color, 2)
 
     await state.update_data(documents=documents)
     await update_total_price(state)
@@ -285,11 +409,11 @@ async def send_order_to_printer(message: Message, state: FSMContext, payment_inf
     ])
 
     caption = (
-        f"📄 *Новый заказ от @{user.username or user.full_name}*\n"
-        f"📂 *Файлы:* \n{file_descriptions}\n"
-        f"📑 *Всего страниц:* {total_pages}\n"
-        f"💰 *Итоговая стоимость:* {total_price} руб.\n"
-        f"📌 *Требования:* {requirements}\n"
+        f"📄 Новый заказ от @{user.username or user.full_name}\n"
+        f"📂 Файлы: \n{file_descriptions}\n"
+        f"📑 Всего страниц: {total_pages}\n"
+        f"💰 Итоговая стоимость: {total_price} руб.\n"
+        f"📌 Требования: {requirements}\n"
         f"{payment_info}"
     )
 
