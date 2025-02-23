@@ -302,7 +302,7 @@ async def send_order_to_printer(message: Message, state: FSMContext, payment_inf
 
     try:
         # ✅ Отправляем сообщение-заголовок с описанием заказа
-        await message.bot.send_message(chat_id=printer_id, text=caption, parse_mode="Markdown", reply_markup=complete_button)
+        await message.bot.send_message(chat_id=printer_id, text=caption, reply_markup=complete_button)
 
         # ✅ Разбиваем файлы на группы по 10
         batch_size = 10
@@ -320,8 +320,7 @@ async def send_order_to_printer(message: Message, state: FSMContext, payment_inf
 
             await message.bot.send_media_group(chat_id=printer_id, media=media_group)
 
-        # ✅ Подтверждение пользователю
-        await message.answer(f"✅ *Ваш заказ отправлен исполнителю!*\n💰 *Итоговая стоимость:* {total_price} руб.", parse_mode="Markdown")
+        await message.answer(f"✅ Ваш заказ отправлен исполнителю!\n💰 Итоговая стоимость: {total_price} руб.")
 
     except TelegramBadRequest as e:
         logger.error(f"Ошибка при отправке файлов: {e}")
