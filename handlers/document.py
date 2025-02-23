@@ -62,37 +62,34 @@ async def handle_document(message: Message, state: FSMContext):
         await message.answer("⚠ Ошибка при обработке файла. Попробуйте другой файл.")
         return
 
+    # Получаем текущие данные о документах
     data = await state.get_data()
     documents = data.get("documents", [])
 
     await state.update_data(printer_id=printer_id)
 
+    # Добавляем новый файл в список
     documents.append(
         {"file_id": message.document.file_id, "file_name": message.document.file_name, "pages": page_count, "print_type": None}
     )
     await state.update_data(documents=documents)
 
-    if len(documents) > 3:
+    if len(documents) >= 3:
+        # Если файлов 3 или больше, предлагаем выбрать формат для всех сразу
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Все файлы Ч/Б", callback_data="all_bw")],
             [InlineKeyboardButton(text="Все файлы Цвет", callback_data="all_color")],
             [InlineKeyboardButton(text="Выбрать для каждого", callback_data="choose_each")],
         ])
         await message.answer(
-            "Вы загрузили более 3 файлов. Выберите формат печати для всех сразу или для каждого отдельно:",
+            "Вы загрузили 3 или более файлов. Выберите формат печати для всех сразу или для каждого отдельно:",
             reply_markup=keyboard
         )
-        return
     else:
-        # Если меньше 3 файлов, сразу спрашиваем формат для каждого
-        for doc in documents:
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Ч/Б", callback_data=f"bw_{doc['file_id']}")],
-                [InlineKeyboardButton(text="Цвет", callback_data=f"color_{doc['file_id']}")]
-            ])
-            await message.answer(f"Выберите формат печати для файла: {doc['file_name']}", reply_markup=keyboard)
+        # Если файлов меньше 3, вызываем функцию выбора формата для последнего загруженного
+        await ask_print_type_for_file(message, len(documents) - 1, state)
 
-async def ask_print_type_for_file(message: Message, index: int):
+async def ask_print_type_for_file(message: Message, index: int, state: FSMContext):
     data = await state.get_data()
     documents = data.get("documents", [])
 
