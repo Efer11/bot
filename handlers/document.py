@@ -74,8 +74,7 @@ async def handle_document(message: Message, state: FSMContext):
     )
     await state.update_data(documents=documents)
 
-    if len(documents) >= 3:
-        # Если файлов 3 или больше, предлагаем выбрать формат для всех сразу
+    if len(documents) == 3:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Все файлы Ч/Б", callback_data="all_bw")],
             [InlineKeyboardButton(text="Все файлы Цвет", callback_data="all_color")],
@@ -85,8 +84,7 @@ async def handle_document(message: Message, state: FSMContext):
             "Вы загрузили 3 или более файлов. Выберите формат печати для всех сразу или для каждого отдельно:",
             reply_markup=keyboard
         )
-    else:
-        # Если файлов меньше 3, вызываем функцию выбора формата для последнего загруженного
+    elif len(documents) < 3:
         await ask_print_type_for_file(message, len(documents) - 1, state)
 
 async def ask_print_type_for_file(message: Message, index: int, state: FSMContext):
